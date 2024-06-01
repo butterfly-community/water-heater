@@ -1,15 +1,25 @@
 esphome:
-  name: "water-heater"
-  friendly_name: Water-Heater
+  name: "water-heater-v2"
+  friendly_name: Water-Heater-V2
   platformio_options:
+    build_flags: -DBOARD_HAS_PSRAM
     board_build.flash_mode: dio
 
 esp32:
-  board: esp32-c3-devkitm-1
-  variant: ESP32C3
+  board: esp32-s3-devkitc-1
+  variant: ESP32S3
+  flash_size: 16MB
   framework:
     type: esp-idf
 
+# psram:
+#   mode: octal
+#   speed: 80MHz
+
+
+esp32_touch:
+  setup_mode: false
+  measurement_duration: 0.25ms
 
 logger: 
   level: VERBOSE
@@ -27,6 +37,17 @@ web_server:
     username: !secret web_username
     password: !secret web_password
 
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  ap:
+    ssid: "ESP32-S3-Test Fallback Hotspot"
+    password: !secret ap_password
+
+captive_portal:
+
+
 mqtt:
   broker: bemfa.com
   port: 9501
@@ -35,7 +56,7 @@ mqtt:
   password: ''
   topic_prefix: null
   on_message: 
-    - topic: "waterheaterpower001"
+    - topic: "v2waterheaterpower001"
       then: 
         - if:
             condition: 
@@ -45,18 +66,75 @@ mqtt:
             else:
               - switch.turn_off: heating_control
 
-    - topic: "waterheaterpower004"
+    - topic: "v2waterheaterpower004"
       then: 
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
 
-  ap:
-    ssid: "Water Heater Fallback Hotspot"
-    password: !secret ap_key
+spi:
+  clk_pin: GPIO11
+  mosi_pin: GPIO12
 
-captive_portal:
+display:
+  - platform: ili9xxx
+    model: ST7789V
+    reset_pin: GPIO13
+    cs_pin: GPIO10
+    data_rate: 80MHz
+    dc_pin: GPIO9
+    invert_colors: true
+    dimensions:
+      height: 240
+      width: 240
+    lambda: |-
+      //it.image(0, 0, id(my_image));
+      // 显示加热状态
+      it.printf(10, 55, id(font_x), "加热:");
+      it.printf(80, 40, id(font_z), " %s", id(heating_control).state ? "开启" : "关闭");
+      // 显示当前温度
+      it.printf(10, 130, id(font_x), "当前:");
+      it.printf(80, 100, id(font_y), " %.0f °C", id(current_temperature).state);
+      // 显示目标温度
+      it.printf(10, 200, id(font_x), "设定:");
+      it.printf(80, 170, id(font_y), " %.0f °C", id(target_temperature).state);
+
+image:
+  - file: "ran.png"
+    id: my_image
+    resize: 240x240
+    type: RGBA
+
+
+font:
+  - file: "gfonts://Noto Sans SC"
+    id: font_x
+    size: 22
+    bpp: 8
+    glyphs: [
+      "加",
+      "热",
+      "当",
+      "前",
+      "设",
+      "定",
+      ":"
+    ]
+
+  - file: "gfonts://Noto Sans SC"
+    id: font_z
+    size: 35
+    bpp: 8
+    glyphs: [
+      "开",
+      "关",
+      "启",
+      "闭",
+      " "
+    ]
+
+  - file: "gfonts://Noto Sans SC"
+    id: font_y
+    size: 50
+    bpp: 8
 
 
 globals:
@@ -67,7 +145,6 @@ globals:
   - id: led_last_mode
     type: int
     initial_value: '-1' 
-    
 
 sensor:
   - platform: ntc
@@ -88,54 +165,120 @@ sensor:
             then:
               - switch.turn_off: heating_control
         - mqtt.publish: 
-            topic: 'waterheaterpower004'
+            topic: 'v2waterheaterpower004'
             payload: !lambda |-
               return "#" + std::to_string((int)x);
 
   - platform: resistance
     id: resistance_sensor
     sensor: source_sensor
-    configuration: DOWNSTREAM
-    resistor: 100kOhm
+    configuration: UPSTREAM
+    resistor: 1kOhm
     reference_voltage: 5v
 
   - platform: adc
     id: source_sensor
-    pin: GPIO3
-    update_interval: 30s
+    pin: GPIO5
+    update_interval: 10s
     attenuation: auto
+
+binary_sensor:
+  - platform: esp32_touch
+    pin: GPIO8
+    threshold: 109000
+    id: power_touch
+    on_click:
+      then:
+        - switch.turn_on: heating_beep_ctrl
+        - if:
+            condition:
+              switch.is_on: power_ctrl
+            then:
+              - switch.turn_off: power_ctrl
+            else:
+              - switch.turn_on: power_ctrl
+
+  - platform: esp32_touch
+    pin: GPIO2
+    threshold: 113000
+    id: heating_touch
+    on_click:
+      then:
+        - switch.turn_on: heating_beep_ctrl
+        - if:
+            condition:
+              switch.is_on: heating_control
+            then:
+              - switch.turn_off: heating_control
+            else:
+              - switch.turn_on: heating_control
+
+  - platform: esp32_touch
+    pin: GPIO4
+    threshold: 92000
+    id: inc_touch
+    on_click:
+      then:
+        - switch.turn_on: heating_beep_ctrl
+        - number.increment:
+            id: target_temperature
+            cycle: false
+
+  - platform: esp32_touch
+    pin: GPIO1
+    threshold: 102000
+    id: dec_touch
+    on_click:
+      then:
+        - switch.turn_on: heating_beep_ctrl
+        - number.decrement:
+            id: target_temperature
+            cycle: false
+
+        
 
 switch:
   - platform: gpio
-    pin: GPIO4
+    pin: GPIO41
     id: heating_control
     restore_mode: ALWAYS_OFF
     on_turn_on: 
       then:
         - mqtt.publish: 
-            topic: 'waterheaterpower001/set'
+            topic: 'v2waterheaterpower001/set'
             payload: 'on'
             qos: 1
         - lambda: 'id(led_mode) = 1;'
-        - switch.turn_on: heating_beep
+        - switch.turn_on: heating_beep_ctrl
     on_turn_off: 
       then:
         - mqtt.publish: 
-            topic: 'waterheaterpower001/set'
+            topic: 'v2waterheaterpower001/set'
             payload: 'off'
             qos: 1
         - lambda: 'id(led_mode) = 0;'
-        - switch.turn_on: heating_beep
+        - switch.turn_on: heating_beep_ctrl
 
     name: 'Heat Switch'
 
   - platform: gpio
-    pin: GPIO10
-    id: heating_beep
+    pin: GPIO47
+    id: heating_beep_ctrl
     restore_mode: ALWAYS_OFF
     on_turn_on:
       - delay: 200ms
-      - switch.turn_off: heating_beep
+      - switch.turn_off: heating_beep_ctrl
+  
+  - platform: gpio
+    pin: GPIO48
+    id: power_ctrl
+    restore_mode: ALWAYS_ON
+
+  - platform: gpio
+    pin: GPIO21
+    id: display_power_ctrl
+    inverted: true
+    restore_mode: ALWAYS_ON
 
 number:
   - platform: template 
@@ -160,7 +303,7 @@ output:
      
   - platform: gpio
     pin:
-      number: GPIO19
+      number: GPIO3
       inverted: true
     id: led_red_gpio
 
